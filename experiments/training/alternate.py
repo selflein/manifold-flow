@@ -257,7 +257,7 @@ class AlternatingTrainer(BaseTrainer):
                 idx = train_idx[last_split:this_split]
                 last_split = this_split
 
-                train_loaders.append(DataLoader(dataset, sampler=SubsetRandomSampler(idx), batch_size=batch_size, num_workers=4))
+                train_loaders.append(DataLoader(dataset, sampler=SubsetRandomSampler(idx), batch_size=batch_size, num_workers=0))
 
             all_train_loaders.append(train_loaders)
 
@@ -269,7 +269,7 @@ class AlternatingTrainer(BaseTrainer):
                     idx = valid_idx[last_split:this_split]
                     last_split = this_split
 
-                    val_loaders.append(DataLoader(dataset, sampler=SubsetRandomSampler(idx), batch_size=batch_size, num_workers=4))
+                    val_loaders.append(DataLoader(dataset, sampler=SubsetRandomSampler(idx), batch_size=batch_size, num_workers=0))
                 else:
                     val_loaders.append(None)
 

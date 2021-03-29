@@ -6,6 +6,9 @@ from scipy.stats import norm
 from .utils import Preprocess, RandomHorizontalFlipTensor
 from .base import BaseSimulator, DatasetNotAvailableError
 from .utils import UnlabelledImageDataset, CSVLabelledImageDataset, LabelledImageDataset
+from PIL import Image
+from torchvision.datasets.cifar import CIFAR10
+from torchvision import transforms as tvt
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +79,38 @@ class BaseImageLoader(BaseSimulator):
 
     def distance_from_manifold(self, x):
         raise NotImplementedError
+
+class CIFAR10Loader(BaseImageLoader):
+    def __init__(self):
+        super().__init__(resolution=32)
+    
+    def load_dataset(self, train, dataset_dir, **kwargs):
+        img_size = self.resolution
+        transform = []
+        if train:
+            transform.extend(
+                [
+                    tvt.Resize(self.resolution, Image.BICUBIC),
+                    tvt.CenterCrop(img_size),
+                    tvt.Pad(4, padding_mode="reflect"),
+                    tvt.RandomRotation(15, resample=Image.BICUBIC),
+                    tvt.RandomHorizontalFlip(),
+                    tvt.RandomCrop(img_size),
+                ]
+            )
+        else:
+            transform.extend(
+                [
+                    tvt.Resize(img_size, Image.BICUBIC),
+                    tvt.CenterCrop(img_size),
+                ]
+            )
+        transform.extend([
+                tvt.ToTensor(),
+                tvt.Normalize((0.5,) * 3, (0.5,) * 3),
+        ])
+        dataset = CIFAR10(dataset_dir, train=train, transform=tvt.Compose(transform), download=True)
+        return dataset
 
 
 class ImageNetLoader(BaseImageLoader):
