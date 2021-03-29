@@ -41,6 +41,7 @@ def parse_args():
     parser.add_argument("--truelatentdim", type=int, default=2, help="True manifold dimensionality (for datasets where that is variable)")
     parser.add_argument("--datadim", type=int, default=3, help="True data dimensionality (for datasets where that is variable)")
     parser.add_argument("--epsilon", type=float, default=0.01, help="Noise term (for datasets where that is variable)")
+    parser.add_argument("--num_classes", type=int, default=0)
 
     # Model details
     parser.add_argument("--modellatentdim", type=int, default=2, help="Model manifold dimensionality")
@@ -211,7 +212,7 @@ def train_manifold_flow_alternating(args, dataset, model, simulator):
         meta_kwargs["optimizer_kwargs"] = {"weight_decay": float(args.weightdecay)}
     _, scandal_loss, scandal_label, scandal_weight = make_training_kwargs(args, dataset)
 
-    phase1_kwargs = {"forward_kwargs": {"mode": "projection"}, "clip_gradient": args.clip}
+    phase1_kwargs = {"forward_kwargs": {"mode": "projection", "return_classification": args.num_classes > 1}, "clip_gradient": args.clip}
     phase2_kwargs = {"forward_kwargs": {"mode": "mf-fixed-manifold"}, "clip_gradient": args.clip}
 
     phase1_parameters = list(model.outer_transform.parameters()) + (list(model.encoder.parameters()) if args.algorithm == "emf" else [])

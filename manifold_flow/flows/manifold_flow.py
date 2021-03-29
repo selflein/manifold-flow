@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 import logging
 
 from manifold_flow.transforms import ProjectionSplit
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 class ManifoldFlow(BaseFlow):
     """ Manifold-based flow (base class for FOM, M-flow, PIE) """
 
-    def __init__(self, data_dim, latent_dim, outer_transform, inner_transform=None, pie_epsilon=1.0e-2, apply_context_to_outer=True, clip_pie=False):
+    def __init__(self, data_dim, latent_dim, outer_transform, inner_transform=None, pie_epsilon=1.0e-2, apply_context_to_outer=True, clip_pie=False, classifier=None):
         super(ManifoldFlow, self).__init__()
 
         self.data_dim = data_dim
@@ -34,10 +35,12 @@ class ManifoldFlow(BaseFlow):
             self.inner_transform = transforms.IdentityTransform()
         else:
             self.inner_transform = inner_transform
-
+        
+        if classifier is not None:
+            self.classifier = classifier
         self._report_model_parameters()
 
-    def forward(self, x, mode="mf", context=None, return_hidden=False):
+    def forward(self, x, mode="mf", context=None, return_hidden=False, return_classification=False):
         """
         Transforms data point to latent space, evaluates likelihood, and transforms it back to data space.
 
@@ -61,6 +64,8 @@ class ManifoldFlow(BaseFlow):
 
         if return_hidden:
             return x_reco, log_prob, u, torch.cat((h_manifold, h_orthogonal), -1)
+        if return_classification:
+            return x_reco, log_prob, u, self.classifier(u)
         return x_reco, log_prob, u
 
     def encode(self, x, context=None):

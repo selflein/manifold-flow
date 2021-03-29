@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import optim, nn
 from torch.autograd import grad
 from torch.utils.data import DataLoader
@@ -577,8 +578,15 @@ class ForwardTrainer(Trainer):
             results = nn.parallel.data_parallel(self.model, x, module_kwargs=forward_kwargs)
         else:
             results = self.model(x, **forward_kwargs)
+
+        clf_loss = 0.
+        hidden=None
         if len(results) == 4:
-            x_reco, log_prob, u, hidden = results
+            if "return_hidden" in forward_kwargs and forward_kwargs["return_hidden"]:
+                x_reco, log_prob, u, hidden = results
+            else:
+                x_reco, log_prob, u, classifier_preds = results
+                clf_loss = F.cross_entropy(classifier_preds, batch_data[1].to(self.device))
         else:
             x_reco, log_prob, u = results
             hidden = None
@@ -595,6 +603,7 @@ class ForwardTrainer(Trainer):
             }
 
         losses = [loss_fn(x_reco, x, log_prob, hidden=hidden) for loss_fn in loss_functions]
+        losses[0] = losses[0] + clf_loss
         self._check_for_nans("Loss", *losses)
 
         return losses
