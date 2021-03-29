@@ -69,7 +69,7 @@ class CompositeTransform(Transform):
             return outputs, total_jacobian
 
         else:
-            total_logabsdet = torch.zeros(batch_size)
+            total_logabsdet = torch.zeros(batch_size).to(inputs.device)
             for func in funcs:
                 outputs, logabsdet = func(outputs, context)
                 total_logabsdet += logabsdet

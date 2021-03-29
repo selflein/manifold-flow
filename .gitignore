@@ -1,5 +1,6 @@
 .vscode
 outputs
+downloaded_datasets
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
