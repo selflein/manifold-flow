@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class ManifoldFlow(BaseFlow):
     """ Manifold-based flow (base class for FOM, M-flow, PIE) """
 
-    def __init__(self, data_dim, latent_dim, outer_transform, inner_transform=None, pie_epsilon=1.0e-2, apply_context_to_outer=True, clip_pie=False, classifier=None):
+    def __init__(self, data_dim, latent_dim, outer_transform, inner_transform=None, pie_epsilon=1.0e-2, apply_context_to_outer=True, clip_pie=False, num_classes=None):
         super(ManifoldFlow, self).__init__()
 
         self.data_dim = data_dim
@@ -36,11 +36,11 @@ class ManifoldFlow(BaseFlow):
         else:
             self.inner_transform = inner_transform
         
-        if classifier is not None:
-            self.classifier = classifier
+        if num_classes is not None and num_classes > 1:
+            self.classifier = nn.Linear(latent_dim, num_classes)
         self._report_model_parameters()
 
-    def forward(self, x, mode="mf", context=None, return_hidden=False, return_classification=False):
+    def forward(self, x, mode="mf", context=None):
         """
         Transforms data point to latent space, evaluates likelihood, and transforms it back to data space.
 
@@ -62,11 +62,13 @@ class ManifoldFlow(BaseFlow):
         # Log prob
         log_prob = self._log_prob(mode, u, h_orthogonal, log_det_inner, log_det_outer, inv_log_det_inner, inv_log_det_outer, inv_jacobian_outer)
 
-        if return_hidden:
-            return x_reco, log_prob, u, torch.cat((h_manifold, h_orthogonal), -1)
-        if return_classification:
-            return x_reco, log_prob, u, self.classifier(u)
-        return x_reco, log_prob, u
+        return {
+            "x_reco": x_reco,
+            "log_prob": log_prob,
+            "u": u,
+            "hidden": torch.cat((h_manifold, h_orthogonal), -1),
+            "clf_out": self.classifier(u) if hasattr(self, "classifier") else None
+        }
 
     def encode(self, x, context=None):
         """ Transforms data point to latent space. """

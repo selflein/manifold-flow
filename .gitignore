@@ -1,6 +1,7 @@
 .vscode
 outputs
 downloaded_datasets
+_cache_downloadeddatasetslsuntestlmdb
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 import torch
+from tqdm import tqdm
 import torch.nn.functional as F
 from torch import optim, nn
 from torch.autograd import grad
@@ -123,7 +124,7 @@ class BaseTrainer(object):
                 raise NanException
 
     @staticmethod
-    def make_dataloader(dataset, validation_split, batch_size, n_workers=4):
+    def make_dataloader(dataset, validation_split, batch_size, n_workers=1):
         logger.debug("Setting up dataloaders with %s workers", n_workers)
 
         if validation_split is None or validation_split <= 0.0:
@@ -375,7 +376,7 @@ class Trainer(BaseTrainer):
         loss_contributions_train = np.zeros(n_losses)
         loss_train = [] if compute_loss_variance else 0.0
 
-        for i_batch, batch_data in enumerate(train_loader):
+        for i_batch, batch_data in enumerate(tqdm(train_loader)):
             if i_batch == 0 and i_epoch == 0:
                 self.first_batch(batch_data)
             batch_loss, batch_loss_contributions = self.batch_train(
@@ -401,7 +402,7 @@ class Trainer(BaseTrainer):
             loss_contributions_val = np.zeros(n_losses)
             loss_val = [] if compute_loss_variance else 0.0
 
-            for i_batch, batch_data in enumerate(val_loader):
+            for i_batch, batch_data in enumerate(tqdm(val_loader)):
                 batch_loss, batch_loss_contributions = self.batch_val(batch_data, loss_functions, loss_weights, forward_kwargs=forward_kwargs, custom_kwargs=custom_kwargs)
                 if compute_loss_variance:
                     loss_val.append(batch_loss)
@@ -578,18 +579,9 @@ class ForwardTrainer(Trainer):
             results = nn.parallel.data_parallel(self.model, x, module_kwargs=forward_kwargs)
         else:
             results = self.model(x, **forward_kwargs)
-
-        clf_loss = 0.
-        hidden=None
-        if len(results) == 4:
-            if "return_hidden" in forward_kwargs and forward_kwargs["return_hidden"]:
-                x_reco, log_prob, u, hidden = results
-            else:
-                x_reco, log_prob, u, classifier_preds = results
-                clf_loss = F.cross_entropy(classifier_preds, batch_data[1].to(self.device))
-        else:
-            x_reco, log_prob, u = results
-            hidden = None
+        
+        x_reco, log_prob, u, hidden, clf_out = (
+            results["x_reco"], results["log_prob"], results["u"], results["hidden"], results["clf_out"])
 
         self._check_for_nans("Reconstructed data", x_reco, fix_until=5)
         if log_prob is not None:
@@ -602,8 +594,12 @@ class ForwardTrainer(Trainer):
                 "u": u.detach().cpu().numpy(),
             }
 
-        losses = [loss_fn(x_reco, x, log_prob, hidden=hidden) for loss_fn in loss_functions]
-        losses[0] = losses[0] + clf_loss
+        losses = []
+        for loss_fn in loss_functions:
+            if loss_fn == F.cross_entropy:
+                losses.append(F.cross_entropy(clf_out, batch_data[1].to(self.device)))
+            else:
+                losses.append(loss_fn(x_reco, x, log_prob, hidden=hidden))
         self._check_for_nans("Loss", *losses)
 
         return losses

@@ -1,8 +1,10 @@
 import logging
+import torch
 import numpy as np
 from torchvision import transforms as tvt
 from scipy.stats import norm
 
+from uncertainty_eval.datasets import DATASETS
 from .utils import Preprocess, RandomHorizontalFlipTensor
 from .base import BaseSimulator, DatasetNotAvailableError
 from .utils import UnlabelledImageDataset, CSVLabelledImageDataset, LabelledImageDataset
@@ -83,19 +85,43 @@ class BaseImageLoader(BaseSimulator):
 class TorchvisionDatasetLoader(BaseImageLoader):
     def __init__(self, dataset):
         super().__init__(resolution=32)
-        if dataset == "cifar10":
-            self.dataset_class = datasets.CIFAR10
-        elif dataset == "lsun":
-            self.dataset_class = datasets.LSUN
-        elif dataset == "svhn":
-            self.dataset_class = datasets.SVHN
-        elif dataset == "celeb-a":
-            self.dataset_class = datasets.CelebA
-        else:
-            raise NotImplementedError
+        self.dataset = dataset
+    
+    @staticmethod
+    def get_dataset(DATA_ROOT, dataset, data_shape=None, length=10_000):
+        try:
+            ds_class = DATASETS[dataset]
+
+            if data_shape is None:
+                data_shape = ds_class.data_shape
+
+            if dataset == "gaussian_noise":
+                m = 127.5 if len(data_shape) == 3 else 0.0
+                s = 60.0 if len(data_shape) == 3 else 1.0
+                mean = torch.empty(*data_shape).fill_(m).cpu()
+                std = torch.empty(*data_shape).fill_(s).cpu()
+                ds = ds_class(DATA_ROOT, length=length, mean=mean, std=std)
+            elif dataset == "uniform_noise":
+                l = 0.0 if len(data_shape) == 3 else -5.0
+                h = 255.0 if len(data_shape) == 3 else 5.0
+                low = torch.empty(*data_shape).fill_(l).cpu()
+                high = torch.empty(*data_shape).fill_(h).cpu()
+                ds = ds_class(DATA_ROOT, length=length, low=low, high=high)
+            else:
+                ds = ds_class(DATA_ROOT)
+        except KeyError as e:
+            raise ValueError(f'Dataset "{dataset}" not supported') from e
+        return ds, data_shape
     
     def load_dataset(self, train, dataset_dir, **kwargs):
         img_size = self.resolution
+        dataset = self.dataset
+
+        unscaled = False
+        if "_unscaled" in self.dataset:
+            dataset = self.dataset.replace("_unscaled", "")
+            unscaled = True
+
         transform = []
         if train:
             transform.extend(
@@ -115,12 +141,24 @@ class TorchvisionDatasetLoader(BaseImageLoader):
                     tvt.CenterCrop(img_size),
                 ]
             )
-        transform.extend([
-                tvt.ToTensor(),
-                tvt.Normalize((0.5,) * 3, (0.5,) * 3),
-        ])
-        dataset = self.dataset_class(dataset_dir, train=train, transform=tvt.Compose(transform), download=True)
-        return dataset
+        
+        if unscaled:
+            unscaled_transform = tvt.Lambda(
+                lambda x: torch.from_numpy(np.array(x)).permute(2, 0, 1).float()
+            )
+            transform.append(unscaled_transform)
+        else:
+            transform.extend([
+                    tvt.ToTensor(),
+                    tvt.Normalize((0.5,) * 3, (0.5,) * 3),
+            ])
+        transform = tvt.Compose(transform)
+
+        datasplit, _ = self.get_dataset(dataset_dir, dataset, data_shape=(32, 32, 3))
+        if train:
+            return datasplit.train(transform)
+        else:
+            return datasplit.test(transform)
 
 
 class ImageNetLoader(BaseImageLoader):

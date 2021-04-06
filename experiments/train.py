@@ -6,6 +6,7 @@ import numpy as np
 import logging
 import sys
 import torch
+import torch.nn.functional as F
 import configargparse
 import copy
 from torch import optim
@@ -15,7 +16,7 @@ sys.path.append("../")
 from training import losses, callbacks
 from training import ForwardTrainer, ConditionalForwardTrainer, SCANDALForwardTrainer, AdversarialTrainer, ConditionalAdversarialTrainer, AlternatingTrainer
 
-from datasets import load_simulator, SIMULATORS
+from datasets import load_simulator
 from utils import create_filename, create_modelname, nat_to_bit_per_dim
 from architectures import create_model
 from architectures.create_model import ALGORITHMS
@@ -34,7 +35,7 @@ def parse_args():
     parser.add_argument(
         "--algorithm", type=str, default="flow", choices=ALGORITHMS, help="Model: flow (AF), mf (FOM, M-flow), emf (Me-flow), pie (PIE), gamf (M-flow-OT), pae (PAE)...",
     )
-    parser.add_argument("--dataset", type=str, default="spherical_gaussian", choices=SIMULATORS, help="Dataset: spherical_gaussian, power, lhc, lhc40d, lhc2d, and some others")
+    parser.add_argument("--dataset", type=str, default="spherical_gaussian", help="Dataset: spherical_gaussian, power, lhc, lhc40d, lhc2d, and some others")
     parser.add_argument("-i", type=int, default=0, help="Run number")
 
     # Dataset details
@@ -42,6 +43,7 @@ def parse_args():
     parser.add_argument("--datadim", type=int, default=3, help="True data dimensionality (for datasets where that is variable)")
     parser.add_argument("--epsilon", type=float, default=0.01, help="Noise term (for datasets where that is variable)")
     parser.add_argument("--num_classes", type=int, default=0)
+    parser.add_argument("--clf_weight", type=float, default=1.0)
 
     # Model details
     parser.add_argument("--modellatentdim", type=int, default=2, help="Model manifold dimensionality")
@@ -130,33 +132,29 @@ def train_manifold_flow(args, dataset, model, simulator):
     trainer = ForwardTrainer(model) if simulator.parameter_dim() is None else ConditionalForwardTrainer(model) if args.scandal is None else SCANDALForwardTrainer(model)
     common_kwargs, scandal_loss, scandal_label, scandal_weight = make_training_kwargs(args, dataset)
 
+    loss_functions = [losses.mse]
+    loss_labels = ["MSE"]
+    loss_weights = [args.msefactor]
+    forward_kwargs = {"mode": "projection"}
+
+    if args.num_classes > 1:
+        loss_functions.append(F.cross_entropy)
+        loss_labels.append("CE")
+        loss_weights.append(args.clf_weight)
+        forward_kwargs["return_classification"] = True
+
     logger.info("Starting training MF, phase 1: pretraining on reconstruction error")
     learning_curves = trainer.train(
-        loss_functions=[losses.mse],
-        loss_labels=["MSE"],
-        loss_weights=[args.msefactor],
+        loss_functions=loss_functions,
+        loss_labels=loss_labels,
+        loss_weights=loss_weights,
         epochs=args.epochs // 3,
         callbacks=[callbacks.save_model_after_every_epoch(create_filename("checkpoint", "A", args))],
-        forward_kwargs={"mode": "projection"},
+        forward_kwargs=forward_kwargs,
         initial_epoch=args.startepoch,
         **common_kwargs,
     )
     learning_curves = np.vstack(learning_curves).T
-
-    logger.info("Starting training MF, phase 2: mixed training")
-    learning_curves_ = trainer.train(
-        loss_functions=[losses.mse, losses.nll] + scandal_loss,
-        loss_labels=["MSE", "NLL"] + scandal_label,
-        loss_weights=[args.msefactor, args.addnllfactor * nat_to_bit_per_dim(args.modellatentdim)] + scandal_weight,
-        epochs=args.epochs - 2 * (args.epochs // 3),
-        parameters=list(model.parameters()),
-        callbacks=[callbacks.save_model_after_every_epoch(create_filename("checkpoint", "B", args))],
-        forward_kwargs={"mode": "mf"},
-        initial_epoch=args.startepoch - (args.epochs // 3),
-        **common_kwargs,
-    )
-    learning_curves_ = np.vstack(learning_curves_).T
-    learning_curves = learning_curves_ if learning_curves is None else np.vstack((learning_curves, learning_curves_))
 
     logger.info("Starting training MF, phase 3: training only inner flow on NLL")
     learning_curves_ = trainer.train(
@@ -270,15 +268,26 @@ def train_manifold_flow_sequential(args, dataset, model, simulator):
         callbacks1.append(callbacks.plot_reco_images(create_filename("training_plot", "reco_epoch_A", args)))
         callbacks2.append(callbacks.plot_reco_images(create_filename("training_plot", "reco_epoch_B", args)))
 
+    loss_functions = [losses.smooth_l1_loss if args.l1 else losses.mse] + ([] if args.uvl2reg is None else [losses.hiddenl2reg])
+    loss_labels = ["L1" if args.l1 else "MSE"] + ([] if args.uvl2reg is None else ["L2_lat"])
+    loss_weights = [args.msefactor] + ([] if args.uvl2reg is None else [args.uvl2reg])
+    parameters = list(model.outer_transform.parameters()) + list(model.encoder.parameters()) if args.algorithm == "emf" else list(model.outer_transform.parameters()),
+
+    if args.num_classes > 1:
+        loss_functions.append(F.cross_entropy)
+        loss_labels.append("CE")
+        loss_weights.append(args.clf_weight)
+        parameters = list(*parameters) + list(model.classifier.parameters())
+
     logger.info("Starting training MF, phase 1: manifold training")
     learning_curves = trainer1.train(
-        loss_functions=[losses.smooth_l1_loss if args.l1 else losses.mse] + ([] if args.uvl2reg is None else [losses.hiddenl2reg]),
-        loss_labels=["L1" if args.l1 else "MSE"] + ([] if args.uvl2reg is None else ["L2_lat"]),
-        loss_weights=[args.msefactor] + ([] if args.uvl2reg is None else [args.uvl2reg]),
+        loss_functions=loss_functions,
+        loss_labels=loss_labels,
+        loss_weights=loss_weights,
         epochs=args.epochs // 2,
-        parameters=list(model.outer_transform.parameters()) + list(model.encoder.parameters()) if args.algorithm == "emf" else list(model.outer_transform.parameters()),
+        parameters=parameters,
         callbacks=callbacks1,
-        forward_kwargs={"mode": "projection", "return_hidden": args.uvl2reg is not None},
+        forward_kwargs = {"mode": "projection"},
         initial_epoch=args.startepoch,
         **common_kwargs,
     )

@@ -1,6 +1,7 @@
 #! /usr/bin/env python
 
 """ Top-level script for evaluating models """
+from pathlib import Path
 
 import numpy as np
 import logging
@@ -11,6 +12,7 @@ import configargparse
 import copy
 import tempfile
 import os
+import pandas as pd
 from sklearn.metrics import roc_auc_score, average_precision_score
 
 sys.path.append("../")
@@ -41,7 +43,7 @@ def parse_args():
     parser.add_argument("--dataset", type=str, default="spherical_gaussian", help="Dataset: spherical_gaussian, power, lhc, lhc40d, lhc2d, and some others")
     parser.add_argument("-i", type=int, default=0, help="Run number")
     parser.add_argument("--model_path", type=str, default=None)
-    parser.add_argument("--ood_datasets", action="append", default=[])
+    parser.add_argument("--ood_dataset", action="append", default=["celeb-a", "svhn", "lsun", "cifar100", "uniform_noise", "textures", "gaussian_noise"])
     parser.add_argument("--dataset_dir", type=str, default="./downloaded_datasets")
 
     # Dataset details
@@ -77,14 +79,14 @@ def parse_args():
     # Other settings
     parser.add_argument("-c", is_config_file=True, type=str, help="Config file path")
     parser.add_argument("--debug", default=True)
-    parser.add_argument("--num_classes", default=0)
+    parser.add_argument("--num_classes", default=0, type=int)
 
     return parser.parse_args()
 
-def evaluate_test_samples(args, simulator, model=None):
+def evaluate_test_samples(args, simulator, model=None, eval_classifier=False):
     """ Likelihood evaluation """
     # Prepare
-    dataset = simulator.load_dataset(train=False, dataset_dir=args.dataset_dir)
+    dataset = simulator.load_dataset(train=False, dataset_dir=Path(args.dataset_dir))
     dataloader = DataLoader(
         dataset,
         batch_size=32,
@@ -94,24 +96,38 @@ def evaluate_test_samples(args, simulator, model=None):
     )
 
     # Evaluate
-    log_prob = []
+    log_prob_ = []
     reco_error_ = []
+    logits = []
+    ys = []
     for batch in dataloader:
         x_, y = batch
+        ys.append(y.cpu())
         x_ = x_.cuda()
         if args.algorithm == "flow":
-            x_reco, log_prob_, _ = model(x_, context=params_)
+            out = model(x_, context=params_)
         elif args.algorithm in ["pie", "slice"]:
-            x_reco, log_prob_, _ = model(x_, context=params_, mode=args.algorithm if not args.skiplikelihood else "projection")
+            out = model(x_, context=params_, mode=args.algorithm if not args.skiplikelihood else "projection", )
         else:
-            x_reco, log_prob_, _ = model(x_, context=None, mode="mf-fixed-manifold")
+            out = model(x_, context=None, mode="mf-fixed-manifold", return_classification=True)
 
-        log_prob.append(log_prob_.detach().cpu().numpy())
+        x_reco, log_prob, u, hidden, clf_out = (
+            out["x_reco"], out["log_prob"], out["u"], out["hidden"], out["clf_out"])
+        
+        logits.append(clf_out.detach().cpu())
+
+        log_prob_.append(log_prob.detach().cpu().numpy())
         reco_error_.append((sum_except_batch((x_ - x_reco) ** 2) ** 0.5).detach().cpu().numpy())
+    
+    if eval_classifier:
+        ys = torch.cat(ys)
+        logits = torch.cat(logits)
+        acc = (ys == logits.argmax(-1)).float().mean()
+        print(f"Accuracy: {acc.item() * 100:.02f}")
 
-    log_prob = np.concatenate(log_prob, axis=0)
+    log_prob = np.concatenate(log_prob_, axis=0)
     reco_error = np.concatenate(reco_error_, axis=0)
-    return {"p(x)": log_prob, "reco_error": reco_error}
+    return {"p(x)": log_prob, "reco_error": -reco_error}
 
 
 if __name__ == "__main__":
@@ -142,10 +158,11 @@ if __name__ == "__main__":
     model.eval()
 
     # Compute ID OOD scores
-    id_scores_dict = evaluate_test_samples(args, simulator, model=model)
+    id_scores_dict = evaluate_test_samples(args, simulator, model=model, eval_classifier=True)
 
     # Compute OOD detection metrics
-    for ood_ds in args.ood_datasets:
+    rows = []
+    for ood_ds in args.ood_dataset:
         logger.info(f"\n\n{ood_ds}")
 
         args.dataset = ood_ds
@@ -166,5 +183,9 @@ if __name__ == "__main__":
             logger.info(score_name)
             logger.info(f"AUROC: {auroc * 100:.02f}")
             logger.info(f"AUPR: {aupr * 100:.02f}")
+            rows.append((score_name, ood_ds, auroc * 100, aupr * 100))
 
+    model_name = Path(args.model_path).stem
+    df = pd.DataFrame(rows, columns=["Score", "OOD Dataset", "AUROC", "AUPR"])
+    df.to_csv(f"{model_name}.csv", index=False)
     logger.info("All done! Have a nice day!")

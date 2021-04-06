@@ -108,19 +108,6 @@ def create_image_mf(args, c, h, simulator, w):
         use_batch_norm=args.batchnorm,
     )
 
-    classifier = None
-    if args.num_classes > 1:
-        classifier = nn.Sequential(
-            nn.Linear(args.modellatentdim, args.modellatentdim // 2),
-            nn.ReLU(inplace=True),
-            nn.Linear(args.modellatentdim // 2, args.modellatentdim // 2),
-            nn.ReLU(inplace=True),
-            nn.Linear(args.modellatentdim // 2, args.modellatentdim // 2),
-            nn.ReLU(inplace=True),
-            nn.Linear(args.modellatentdim // 2, args.num_classes)
-        )
-
-
     model = ManifoldFlow(
         data_dim=args.datadim,
         latent_dim=args.modellatentdim,
@@ -129,7 +116,7 @@ def create_image_mf(args, c, h, simulator, w):
         apply_context_to_outer=args.conditionalouter,
         pie_epsilon=args.pieepsilon,
         clip_pie=args.pieclip,
-        classifier=classifier
+        num_classes=args.num_classes
     )
     return model
 
